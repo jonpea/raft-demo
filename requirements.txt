@@ -1,0 +1,8 @@
+anyio
+attrs
+hypothesis
+ipython
+mypy
+pytest
+pytest-asyncio
+ruff
