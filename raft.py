@@ -8,7 +8,6 @@ from typing import (
     Callable,
     Final,
     Generator,
-    Iterable,
     Self,
     Sequence,
     TypeAlias,
@@ -190,11 +189,6 @@ def WithMessage(m: Message, msgs: Counter[Message]) -> Counter[Message]:
     new bag of messages with one more m in it.
     """
     result = msgs.copy()
-    try:
-        hash(m)
-    except:
-        print(m)
-        print("***")
     result[m] += 1
     return result
 
@@ -231,19 +225,6 @@ def Reply(
 ) -> Counter[Message]:
     """Combination of Send and Discard."""
     return WithoutMessage(request, WithMessage(response, msgs))
-
-
-# <<<
-
-
-# def Min(s: set[int]) -> int|NilType:
-#     """Return the minimum value from a set, or undefined if the set is empty."""
-#     return min(s, default=Nil)
-
-
-def Max(s: set[int]) -> int | NilType:
-    """Return the maximum value from a set, or undefined if the set is empty."""
-    return max(s, default=Nil)
 
 
 # ----
