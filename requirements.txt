@@ -3,6 +3,7 @@ attrs
 hypothesis
 ipython
 mypy
+numpy
 pytest
 pytest-asyncio
 ruff

@@ -1,37 +1,34 @@
+import enum
+import itertools
+import random
 from collections import Counter
 from dataclasses import dataclass, replace
-import enum
-from typing import Callable, Final, Generator, Self, Sequence, TypeAlias
+from typing import (
+    Any,
+    Callable,
+    Final,
+    Generator,
+    Iterable,
+    Self,
+    Sequence,
+    TypeAlias,
+    TypeVar,
+)
 
-# --------------------------------- MODULE raft ---------------------------------
-# This is the formal specification for the Raft consensus algorithm.
-#
-# Copyright 2014 Diego Ongaro.
-# This work is licensed under the Creative Commons Attribution-4.0
-# International License https://creativecommons.org/licenses/by/4.0/
-
-# EXTENDS Naturals, FiniteSets, Sequences, TLC
-
-"""
-# The set of server IDs
-Server: Final = [10, 20, 30, 40, 50]
-
-# The set of requests that can go into the log
-Value: Final = [100, 200, 300]
-"""
-
+LogId = int
+LogValue = int
 MessageId = int
 ServerId = int
 TermId = int
-LogId = int
-LogValue = int
+T = TypeVar("T")
 
 
-# Server states.
 class ServerState(enum.Enum):
-    Follower = enum.auto()
-    Candidate = enum.auto()
-    Leader = enum.auto()
+    """Server states"""
+
+    FOLLOWER = enum.auto()
+    CANDIDATE = enum.auto()
+    LEADER = enum.auto()
 
 
 class NilType:
@@ -40,23 +37,6 @@ class NilType:
 
 # A reserved value.
 Nil: Final = NilType()
-
-
-# # Message types:
-# class MessageType(enum.Enum):
-#     RequestVoteRequest = enum.auto()
-#     RequestVoteResponse = enum.auto()
-#     AppendEntriesRequest = enum.auto()
-#     AppendEntriesResponse = enum.auto()
-
-# @dataclass(frozen=True, slots=True)
-# class MessageEntry:
-#     mtype: MessageType
-#     mterm: TermId
-#     mlastLogTerm: TermId
-#     mlastLogIndex: int
-#     msource: ServerId
-#     mdest: ServerId
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,22 +54,22 @@ class Message:
 
 @dataclass(frozen=True, slots=True)
 class RequestVoteRequest(Message):
-    mlastLogTerm: LogEntry
+    mlastLogTerm: int
     mlastLogIndex: int
 
 
 @dataclass(frozen=True, slots=True)
 class RequestVoteResponse(Message):
     mvoteGranted: bool
-    mlog: list[LogEntry]
+    mlog: tuple[LogEntry, ...]  # hashable (unlike list)
 
 
 @dataclass(frozen=True, slots=True)
 class AppendEntriesRequest(Message):
     mprevLogIndex: int
     mprevLogTerm: int
-    mentries: list[LogEntry]
-    mlog: list[LogEntry]
+    mentries: tuple[LogEntry, ...]
+    mlog: tuple[LogEntry, ...]  # hashable (unlike list)
     mcommitIndex: int
 
 
@@ -103,31 +83,31 @@ class AppendEntriesResponse(Message):
 class ElectionEntry:
     eterm: TermId
     eleader: ServerId
-    elog: LogId
-    evotes: dict[ServerId, list[ServerId]]
-    evoterLog: dict[ServerId, dict[ServerId, list[LogEntry]]]
+    elog: list[LogEntry]
+    evotes: set[ServerId]
+    evoterLog: dict[ServerId, list[LogEntry]]
 
 
 @dataclass(frozen=True, slots=True)
 class System:
-    # Global variables
 
+    # Global variables
     # A bag of records representing requests and responses sent from one server
     # to another. TLAPS doesn't support the Bags module, so this is a function
     # mapping Message to Nat.
-    messages: Counter[MessageId] = Counter()
+    messages: Counter[Message]
 
     # A history variable used in the proof. This would not be present in an
     # implementation.
     # Keeps track of successful elections, including the initial logs of the
     # leader and voters' logs. Set of functions containing various things about
     # successful elections (see BecomeLeader).
-    elections: list[ElectionEntry] = []
+    elections: list[ElectionEntry]
 
     # A history variable used in the proof. This would not be present in an
     # implementation.
     # Keeps track of every log ever in the system (set of logs).
-    allLogs: list[LogEntry] = []
+    allLogs: list[LogEntry]
 
     """
     # serverVars == <<currentTerm, state, votedFor>>
@@ -160,54 +140,43 @@ class System:
 
     # The set of all quorums. This just calculates simple majorities, but the only
     # important property is that every quorum overlaps with every other.
-    def Quorum(self, votes: list[ServerId]) -> bool:
+    def Quorum(self, votes: set[int] | list[int]) -> bool:
         # {i \in SUBSET(Server) : Cardinality(i) * 2 > Cardinality(Server)}
-        return len(votes) > len(self.server_ids) // 2
-
-    def Send(self, m: MessageId) -> Self:
-        """Add a message to the bag of messages."""
-        return replace(self, messages=WithMessage(m, self.messages))
-
-    def Discard(self, m: MessageId) -> Self:
-        """
-        Remove a message from the bag of messages. Used when a server is done
-        processing a message.
-        """
-        return replace(self, messages=WithoutMessage(m, self.messages))
-
-    # Combination of Send and Discard
-    def Reply(self, response: MessageId, request: MessageId) -> Self:
-        return replace(
-            self, messages=WithoutMessage(request, WithMessage(response, self.messages))
-        )
+        return len(votes) > len(self.serverIds) // 2
 
     @classmethod
-    def init(cls, server_ids: Sequence[ServerId]) -> Self:
+    def init(cls, serverIds: Sequence[ServerId]) -> Self:
         """Define initial values for all variables."""
         return cls(
             # InitHistoryVars:
-            voterLog={i: {} for i in server_ids},
+            elections=[],
+            allLogs=[],
+            voterLog={i: {} for i in serverIds},
             # InitServerVars:
-            currentTerm={i: 1 for i in server_ids},
-            state={i: ServerState.Follower for i in server_ids},
-            votedFor={i: Nil for i in server_ids},
+            currentTerm={i: 1 for i in serverIds},
+            state={i: ServerState.FOLLOWER for i in serverIds},
+            votedFor={i: Nil for i in serverIds},
             # InitCandidateVars:
-            votesResponded={i: set() for i in server_ids},
-            votesGranted={i: set() for i in server_ids},
+            votesResponded={i: set() for i in serverIds},
+            votesGranted={i: set() for i in serverIds},
             # The values nextIndex[i][i] and matchIndex[i][i] are never read, since the
             # leader does not send itself messages. It's still easier to include these
             # in the functions.
             # InitLeaderVars:
-            nextIndex={i: {j: 1 for j in server_ids} for i in server_ids},
-            matchIndex={i: {j: 0 for j in server_ids} for i in server_ids},
+            nextIndex={
+                i: {j: 1 for j in serverIds} for i in serverIds
+            },  # base-0 for Python
+            matchIndex={i: {j: 0 for j in serverIds} for i in serverIds},
             # InitLogVars:
-            log={i: [] for i in server_ids},
-            commitIndex={i: 0 for i in server_ids},
+            log={i: [] for i in serverIds},
+            commitIndex={i: 0 for i in serverIds},
+            # Init:
+            messages=Counter(),
         )
 
     @property
-    def server_ids(self) -> Sequence[ServerId]:
-        return self.state.keys()
+    def serverIds(self) -> Sequence[ServerId]:
+        return list(self.state.keys())
 
 
 def LastTerm(xlog: list[LogEntry]) -> int:
@@ -215,17 +184,22 @@ def LastTerm(xlog: list[LogEntry]) -> int:
     return 0 if len(xlog) == 0 else xlog[-1].term
 
 
-def WithMessage(m: MessageId, msgs: Counter[MessageId]) -> Counter[MessageId]:
+def WithMessage(m: Message, msgs: Counter[Message]) -> Counter[Message]:
     """
     Helper for Send and Reply. Given a message m and bag of messages, return a
     new bag of messages with one more m in it.
     """
     result = msgs.copy()
+    try:
+        hash(m)
+    except:
+        print(m)
+        print("***")
     result[m] += 1
     return result
 
 
-def WithoutMessage(m: MessageId, msgs: Counter[MessageId]) -> Counter[MessageId]:
+def WithoutMessage(m: Message, msgs: Counter[Message]) -> Counter[Message]:
     """
     Helper for Discard and Reply. Given a message m and bag of messages, return
     a new bag of messages with one less m in it.
@@ -236,12 +210,38 @@ def WithoutMessage(m: MessageId, msgs: Counter[MessageId]) -> Counter[MessageId]
     return result
 
 
-def Min(s):
-    """Return the minimum value from a set, or undefined if the set is empty."""
-    return min(s, default=Nil)
+# >>>
+def Send(m: Message, msgs: Counter[Message]) -> Counter[Message]:
+    """Add a message to the bag of messages."""
+    return WithMessage(m, msgs)
 
 
-def Max(s):
+def Discard(m: Message, msgs: Counter[Message]) -> Counter[Message]:
+    """
+    Remove a message from the bag of messages. Used when a server is done
+    processing a message.
+    """
+    return WithoutMessage(m, msgs)
+
+
+def Reply(
+    response: Message,
+    request: Message,
+    msgs: Counter[Message],
+) -> Counter[Message]:
+    """Combination of Send and Discard."""
+    return WithoutMessage(request, WithMessage(response, msgs))
+
+
+# <<<
+
+
+# def Min(s: set[int]) -> int|NilType:
+#     """Return the minimum value from a set, or undefined if the set is empty."""
+#     return min(s, default=Nil)
+
+
+def Max(s: set[int]) -> int | NilType:
     """Return the maximum value from a set, or undefined if the set is empty."""
     return max(s, default=Nil)
 
@@ -250,85 +250,75 @@ def Max(s):
 # Define state transitions
 
 
-@dataclass(frozen=True, slots=True)
-class Conjunct:
-    terms: tuple[Callable, ...]
+# @dataclass(frozen=True, slots=True)
+# class Transition:
+#     terms: list[Callable]
+#
+#     @classmethod
+#     def init(cls, *args) -> Self:
+#         return cls(list(args))
+#
+# class Any(Transition):
+#     pass
+#
+# class All(Transition):
+#     pass
 
 
-@dataclass(frozen=True, slots=True)
-class Disjunct:
-    terms: tuple[Callable, ...]
+Transition: TypeAlias = Callable[[System], System | None]
 
 
-Expression: TypeAlias = Conjunct | Disjunct
+def Restart(i: ServerId) -> Transition:
+    """
+    Server i restarts from stable storage.
+    It loses everything but its currentTerm, votedFor, and log.
+    """
 
-
-def any_of(*terms: Callable) -> Disjunct:
-    return Disjunct(terms)
-
-
-def all_of(*terms: Callable) -> Conjunct:
-    return Conjunct(terms)
-
-
-@dataclass(frozen=True, slots=True)
-class Transition:
-    system: System
-    args: tuple
-
-
-def transition(system: System, *args, **kwargs) -> Transition:
-    return Transition(system=replace(system, **kwargs), args=args)
-
-
-Transitions: TypeAlias = Generator[Transition]
-TransitionActions: TypeAlias = Callable[[System], Transitions]
-
-
-# Server i restarts from stable storage.
-# It loses everything but its currentTerm, votedFor, and log.
-def Restart(i: ServerId) -> TransitionActions:
-    def step(sys: System) -> Transitions:
-        yield transition(
+    def step(sys: System) -> System | None:
+        return replace(
             sys,
-            state=sys.state | {i: ServerState.Follower},
-            votesResponded=sys.votesResponded | {i: []},
-            votesGranted=sys.votesGranted | {i: []},
-            voterLog=sys.voterLog | {i: {}},
-            nextIndex=sys.nextIndex | {i: {j: 1 for j in sys.server_ids}},
-            matchIndex=sys.matchIndex | {i: {j: 0 for j in sys.server_ids}},
+            state=sys.state | {i: ServerState.FOLLOWER},
+            votesResponded=sys.votesResponded | {i: set()},
+            votesGranted=sys.votesGranted | {i: set()},
+            voterLog=sys.voterLog | {i: dict()},
+            # base-0 for Python
+            nextIndex=sys.nextIndex | {i: {j: 1 * 0 for j in sys.serverIds}},
+            matchIndex=sys.matchIndex | {i: {j: 0 for j in sys.serverIds}},
             commitIndex=sys.commitIndex | {i: 0},
         )
 
     return step
 
 
-# Server i times out and starts a new election.
-def Timeout(i: ServerId) -> TransitionActions:
-    def step(sys: System) -> Transitions:
-        if sys.state[i] in (ServerState.Follower, ServerState.Candidate):
-            yield transition(
+def Timeout(i: ServerId) -> Transition:
+    """Server i times out and starts a new election."""
+
+    def step(sys: System) -> System | None:
+        if sys.state[i] in (ServerState.FOLLOWER, ServerState.CANDIDATE):
+            return replace(
                 sys,
-                state=sys.state | {i: ServerState.Candidate},
+                state=sys.state | {i: ServerState.CANDIDATE},
                 currentTerm=sys.currentTerm | {i: sys.currentTerm[i] + 1},
                 # Most implementations would probably just set the local vote
                 # atomically, but messaging localhost for it is weaker.
                 votedFor=sys.votedFor | {i: Nil},
-                votesResponded=sys.votesResponded | {i: []},
-                votesGranted=sys.votesGranted | {i: []},
-                voterLog=sys.voterLog | {i: {}},
+                votesResponded=sys.votesResponded | {i: set()},
+                votesGranted=sys.votesGranted | {i: set()},
+                voterLog=sys.voterLog | {i: dict()},
             )
+        return None
 
     return step
 
 
-# Candidate i sends j a RequestVote request.
-def RequestVote(i: ServerId, j: ServerId) -> TransitionActions:
-    def step(sys: System) -> Transitions:
+def RequestVote(i: ServerId, j: ServerId) -> Transition:
+    """Candidate i sends j a RequestVote request."""
+
+    def step(sys: System) -> System | None:
         if j not in sys.votesResponded[i]:
-            yield transition(
+            return replace(
                 sys,
-                state=sys.state | {i: ServerState.Candidate},
+                state=sys.state | {i: ServerState.CANDIDATE},
                 messages=WithMessage(
                     RequestVoteRequest(
                         mterm=sys.currentTerm[i],
@@ -340,39 +330,43 @@ def RequestVote(i: ServerId, j: ServerId) -> TransitionActions:
                     sys.messages,
                 ),
             )
+        return None
 
     return step
 
 
-def SubSeq(s, i_base1: int, j_base1: int):
+def SubSeq(s: list[T], i_base1: int, j_base1: int) -> list[T]:
     """A Python-translation of the TLA+ library function."""
     # TLA+ indexing is "base-1 and inclusive at both ends"
     return s[i_base1 - 1 : j_base1]
 
 
-# Leader i sends j an AppendEntries request containing up to 1 entry.
-# While implementations may want to send more than 1 at a time, this spec uses
-# just 1 because it minimizes atomic regions without loss of generality.
-def AppendEntries(i: ServerId, j: ServerId) -> TransitionActions:
-    def step(sys: System) -> Transitions:
-        if i != j and sys.state[i] is ServerState.Leader:
-            prevLogIndex = sys.nextIndex[i][j] - 1
+def AppendEntries(i: ServerId, j: ServerId) -> Transition:
+    """
+    Leader i sends j an AppendEntries request containing up to 1 entry.
+    While implementations may want to send more than 1 at a time, this spec uses
+    just 1 because it minimizes atomic regions without loss of generality.
+    """
+
+    def step(sys: System) -> System | None:
+        if i != j and sys.state[i] is ServerState.LEADER:
+            prevLogIndex = sys.nextIndex[i][j] - 1  # base-0 (nextIndex is base-1)
             prevLogTerm = sys.log[i][prevLogIndex].term if prevLogIndex > 0 else 0
             # Send up to 1 entry, constrained by the end of the log.
             lastEntry = min(len(sys.log[i]), sys.nextIndex[i][j])
             entries = SubSeq(sys.log[i], sys.nextIndex[i][j], lastEntry)
 
-            yield transition(
+            return replace(
                 sys,
                 messages=WithMessage(
                     AppendEntriesRequest(
                         mterm=sys.currentTerm[i],
                         mprevLogIndex=prevLogIndex,
                         mprevLogTerm=prevLogTerm,
-                        mentries=entries,
+                        mentries=tuple(entries),
                         # mlog is used as a history variable for the proof.
                         # It would not exist in a real implementation.
-                        mlog=sys.log[i],
+                        mlog=tuple(sys.log[i]),
                         mcommitIndex=min(sys.commitIndex[i], lastEntry),
                         msource=i,
                         mdest=j,
@@ -380,20 +374,22 @@ def AppendEntries(i: ServerId, j: ServerId) -> TransitionActions:
                     sys.messages,
                 ),
             )
+        return None
 
     return step
 
 
-# Candidate i transitions to leader.
-def BecomeLeader(i: ServerId) -> TransitionActions:
-    def step(sys: System) -> Transitions:
-        if sys.state[i] is ServerState.Candidate and sys.Quorum(sys.votesGranted[i]):
-            yield transition(
+def BecomeLeader(i: ServerId) -> Transition:
+    """Candidate i transitions to leader."""
+
+    def step(sys: System) -> System | None:
+        if sys.state[i] is ServerState.CANDIDATE and sys.Quorum(sys.votesGranted[i]):
+            return replace(
                 sys,
-                state=sys.state | {i: ServerState.Leader},
+                state=sys.state | {i: ServerState.LEADER},
                 nextIndex=sys.nextIndex
-                | {i: {j: len(sys.log[i]) + 1 for j in sys.server_ids}},
-                matchIndex=sys.matchIndex | {i: {j: 0 for j in sys.server_ids}},
+                | {i: {j: len(sys.log[i]) + 1 for j in sys.serverIds}},
+                matchIndex=sys.matchIndex | {i: {j: 0 for j in sys.serverIds}},
                 elections=sys.elections
                 + [
                     ElectionEntry(
@@ -405,30 +401,36 @@ def BecomeLeader(i: ServerId) -> TransitionActions:
                     ),
                 ],
             )
-
-
-# Leader i receives a client request to add v to the log.
-def ClientRequest(i: ServerId, v: LogValue) -> TransitionActions:
-    def step(sys: System) -> Transitions:
-        if sys.state[i] is ServerState.Leader:
-            entry = LogEntry(term=sys.currentTerm[i], value=v)
-            yield transition(sys, log=sys.log | {i: sys.log[i] + [entry]})
+        return None
 
     return step
 
 
-# Leader i advances its commitIndex.
-# This is done as a separate step from handling AppendEntries responses,
-# in part to minimize atomic regions, and in part so that leaders of
-# single-server clusters are able to mark entries committed.
-def AdvanceCommitIndex(i: ServerId) -> TransitionActions:
-    def step(sys: System) -> Transitions:
-        if sys.state[i] is ServerState.Leader:
+def ClientRequest(i: ServerId, v: LogValue) -> Transition:
+    """Leader i receives a client request to add v to the log."""
+
+    def step(sys: System) -> System | None:
+        if sys.state[i] is ServerState.LEADER:
+            entry = LogEntry(term=sys.currentTerm[i], value=v)
+            return replace(sys, log=sys.log | {i: sys.log[i] + [entry]})
+        return None
+
+    return step
+
+
+def AdvanceCommitIndex(i: ServerId) -> Transition:
+    """
+    Leader i advances its commitIndex.
+    This is done as a separate step from handling AppendEntries responses,
+    in part to minimize atomic regions, and in part so that leaders of
+    single-server clusters are able to mark entries committed.
+    """
+
+    def step(sys: System) -> System | None:
+        if sys.state[i] is ServerState.LEADER:
             # The set of servers that agree up through index.
             def Agree(index: int) -> set[ServerId]:
-                return {i} | {
-                    k for k in sys.server_ids if sys.matchIndex[i][k] >= index
-                }
+                return {i} | {k for k in sys.serverIds if sys.matchIndex[i][k] >= index}
 
             # The maximum indexes for which a quorum agrees
             agreeIndexes = {
@@ -438,10 +440,11 @@ def AdvanceCommitIndex(i: ServerId) -> TransitionActions:
             newCommitIndex = (
                 max(agreeIndexes)
                 if len(agreeIndexes) != 0
-                and sys.log[i][Max(agreeIndexes)].term == sys.currentTerm[i]
+                and sys.log[i][max(agreeIndexes)].term == sys.currentTerm[i]
                 else sys.commitIndex[i]
             )
-            yield transition(sys, commitIndex=sys.commitIndex | {i: newCommitIndex})
+            return replace(sys, commitIndex=sys.commitIndex | {i: newCommitIndex})
+        return None
 
     return step
 
@@ -451,45 +454,52 @@ def AdvanceCommitIndex(i: ServerId) -> TransitionActions:
 # i = recipient, j = sender, m = message
 
 
-# Server i receives a RequestVote request from server j with
-# m.mterm <= currentTerm[i].
 def HandleRequestVoteRequest(
     i: ServerId, j: ServerId, m: RequestVoteRequest
-) -> TransitionActions:
-    def step(sys: System) -> Transitions:
-        log_i: list[LogEntry] = sys.log[i]
-        logOk: bool = (m.mlastLogTerm > LastTerm(log_i)) or (
-            m.mlastLogTerm == LastTerm(log_i) and m.mlastLogIndex >= len(log_i)
-        )
-        grant: bool = (
-            m.mterm == sys.currentTerm[i] and logOk and sys.votedFor[i] in (Nil, j)
-        )
+) -> Transition:
+    """
+    Server i receives a RequestVote request from server j with
+    m.mterm <= currentTerm[i].
+    """
+
+    def step(sys: System) -> System | None:
         if m.mterm <= sys.currentTerm[i]:
+            log_i: list[LogEntry] = sys.log[i]
+            logOk: bool = (m.mlastLogTerm > LastTerm(log_i)) or (
+                m.mlastLogTerm == LastTerm(log_i) and m.mlastLogIndex >= len(log_i)
+            )
+            grant: bool = (
+                m.mterm == sys.currentTerm[i] and logOk and sys.votedFor[i] in (Nil, j)
+            )
             request = m
             response = RequestVoteResponse(
                 mterm=sys.currentTerm[i],
                 mvoteGranted=grant,
                 # mlog is used just for the `elections' history variable for
                 # the proof. It would not exist in a real implementation.
-                mlog=sys.log[i],
+                mlog=tuple(sys.log[i]),
                 msource=i,
                 mdest=j,
             )
-            yield transition(
+            return replace(
                 sys,
                 messages=WithoutMessage(request, WithMessage(response, sys.messages)),
                 votedFor=sys.votedFor | {i: j} if grant else sys.votedFor,
             )
+        return None
 
     return step
 
 
-# Server i receives a RequestVote response from server j with
-# m.mterm = currentTerm[i].
 def HandleRequestVoteResponse(
     i: ServerId, j: ServerId, m: RequestVoteResponse
-) -> TransitionActions:
-    def action(sys: System) -> Transitions:
+) -> Transition:
+    """
+    Server i receives a RequestVote response from server j with
+    m.mterm = currentTerm[i].
+    """
+
+    def action(sys: System) -> System | None:
         # This tallies votes even when the current state is not Candidate, but
         # they won't be looked at, so it doesn't matter.
         if m.mterm == sys.currentTerm[i]:
@@ -500,33 +510,37 @@ def HandleRequestVoteResponse(
                 else sys.votesGranted
             )
             voterLog = (
-                (sys.voterLog | {i: sys.voterLog[i] | {j: m.mlog}})
+                (sys.voterLog | {i: sys.voterLog[i] | {j: list(m.mlog)}})
                 if m.mvoteGranted
                 else sys.voterLog
             )
-            yield transition(
+            return replace(
                 sys,
                 votesResponded=votesResponded,
                 votesGranted=votesGranted,
                 voterLog=voterLog,
                 messages=WithoutMessage(m, sys.messages),
             )
+        return None
 
     return action
 
 
-# Server i receives an AppendEntries request from server j with
-# m.mterm <= currentTerm[i]. This just handles m.entries of length 0 or 1, but
-# implementations could safely accept more by treating them the same as
-# multiple independent requests of 1 entry.
 def HandleAppendEntriesRequest(
     i: ServerId, j: ServerId, m: AppendEntriesRequest
-) -> TransitionActions:
-    def action(sys: System) -> Transitions:
+) -> Transition:
+    """
+    Server i receives an AppendEntries request from server j with
+    m.mterm <= currentTerm[i]. This just handles m.entries of length 0 or 1, but
+    implementations could safely accept more by treating them the same as
+    multiple independent requests of 1 entry.
+    """
+
+    def action(sys: System) -> System | None:
         log_i: list[LogEntry] = sys.log[i]
         logOk: bool = (m.mprevLogIndex == 0) or (
-            0 < m.mprevLogIndex <= len(log_i)
-            and m.mprevLogTerm == log_i[m.mprevLogIndex].term
+            0 < m.mprevLogIndex <= len(log_i)  # for decrement...
+            and m.mprevLogTerm == log_i[m.mprevLogIndex - 1].term  # base-0
         )
         if m.mterm <= sys.currentTerm[i]:
             # fmt: off
@@ -534,39 +548,44 @@ def HandleAppendEntriesRequest(
                 m.mterm < sys.currentTerm[i] 
                 or (
                     m.mterm == sys.currentTerm[i]
-                    and sys.state[i] is ServerState.Follower
+                    and sys.state[i] is ServerState.FOLLOWER
                     and not logOk
                 )
             ):  # fmt: on
                 # reject request
-                yield sys.Reply(
-                    response=AppendEntriesResponse(
-                        mterm=sys.currentTerm[i],
-                        msuccess=False,
-                        mmatchIndex=0,
-                        msource=i,
-                        mdest=j,
+                response = AppendEntriesResponse(
+                    mterm=sys.currentTerm[i],
+                    msuccess=False,
+                    mmatchIndex=0,
+                    msource=i,
+                    mdest=j,
+                )
+                request = m
+                return replace(
+                    sys,
+                    messages=WithoutMessage(
+                        request,
+                        WithMessage(response, sys.messages),
                     ),
-                    request=m,
                 )
 
             elif (  # fmt: off
                 m.mterm == sys.currentTerm[i]
-                and sys.state[i] is ServerState.Candidate  # fmt: on
+                and sys.state[i] is ServerState.CANDIDATE  # fmt: on
             ):
                 # return to follower state
-                yield transition(sys, state=sys.state | {i: ServerState.Follower})
+                return replace(sys, state=sys.state | {i: ServerState.FOLLOWER})
 
             elif (
                 m.mterm == sys.currentTerm[i]
-                and sys.state[i] is ServerState.Follower
+                and sys.state[i] is ServerState.FOLLOWER
                 and logOk
             ):
                 # accept request
                 index = m.mprevLogIndex + 1
                 if len(m.mentries) == 0 or (
                     0 < len(m.mentries)
-                    and len(log_i) >= index
+                    and len(log_i) > index
                     and log_i[index].term == m.mentries[0].term
                 ):
                     # already done with request
@@ -582,7 +601,7 @@ def HandleAppendEntriesRequest(
                         msource=i,
                         mdest=j,
                     )
-                    yield transition(
+                    return replace(
                         sys,
                         commitIndex=commitIndex,
                         messages=WithoutMessage(m, WithMessage(response, sys.messages)),
@@ -594,22 +613,25 @@ def HandleAppendEntriesRequest(
                     and log_i[index].term != m.mentries[0].term
                 ):
                     # conflict: remove 1 entry
-                    new = {index2: log_i[index2] for index2 in range(len(log_i) - 1)}
-                    yield transition(sys, log=sys.log | {i: new})
+                    return replace(sys, log=sys.log | {i: log_i[:-1]})
 
                 elif len(m.mentries) != 0 and len(log_i) == m.mprevLogIndex:
                     # no conflict: append entry
-                    yield transition(sys, log=sys.log | {i: log_i + [m.mentries[0]]})
+                    return replace(sys, log=sys.log | {i: log_i + [m.mentries[0]]})
+        return None
 
     return action
 
 
-# Server i receives an AppendEntries response from server j with
-# m.mterm = currentTerm[i].
 def HandleAppendEntriesResponse(
     i: ServerId, j: ServerId, m: AppendEntriesResponse
-) -> TransitionActions:
-    def action(sys: System) -> Transitions:
+) -> Transition:
+    """
+    Server i receives an AppendEntries response from server j with
+    m.mterm = currentTerm[i].
+    """
+
+    def action(sys: System) -> System | None:
         if m.mterm == sys.currentTerm[i]:
             nIi: dict[ServerId, int] = sys.nextIndex[i]
             nextIndex = (
@@ -622,73 +644,84 @@ def HandleAppendEntriesResponse(
                 if m.msuccess
                 else sys.matchIndex
             )
-            yield transition(
+            return replace(
                 sys,
                 nextIndex=nextIndex,
                 matchIndex=matchIndex,
                 messages=WithoutMessage(m, sys.messages),
             )
+        return None
 
     return action
 
 
-# Any RPC with a newer term causes the recipient to advance its term first.
-def UpdateTerm(i: ServerId, j: ServerId, m: Message) -> TransitionActions:
-    def action(sys: System) -> Transitions:
+def UpdateTerm(i: ServerId, j: ServerId, m: Message) -> Transition:
+    """Any RPC with a newer term causes the recipient to advance its term first."""
+
+    def action(sys: System) -> System | None:
         if m.mterm > sys.currentTerm[i]:
-            yield transition(
+            return replace(
                 sys,
                 currentTerm=sys.currentTerm | {i: m.mterm},
-                state=sys.state | {i: ServerState.Follower},
+                state=sys.state | {i: ServerState.FOLLOWER},
                 votedFor=sys.votedFor | {i: Nil},
                 # messages is unchanged so m can be processed further.
             )
+        return None
 
     return action
 
 
-# Responses with stale terms are ignored.
-def DropStaleResponse(i: ServerId, j: ServerId, m: Message) -> TransitionActions:
-    def action(sys: System) -> Transitions:
+def DropStaleResponse(i: ServerId, j: ServerId, m: Message) -> Transition:
+    """Responses with stale terms are ignored."""
+
+    def action(sys: System) -> System | None:
         if m.mterm < sys.currentTerm[i]:
-            yield transition(
+            return replace(
                 sys,
                 messages=WithoutMessage(m, sys.messages),
             )
+        return None
 
     return action
 
 
-# Receive a message.
-def Receive(m: Message):
-    def match_on(i: ServerId, j: ServerId, m: Message):
+def Receive(m: Message) -> Transition:
+    """Receive a message and apply the appropriate state transition."""
+
+    def action(sys: System) -> System | None:
+        i, j = m.mdest, m.msource
+
+        ToTransition: TypeAlias = Callable[[ServerId, ServerId, Any], Transition]
+
+        def invoke(f: ToTransition) -> System | None:
+            nonlocal i, j, m, sys
+            return f(i, j, m)(sys)
+
+        def invoke2(f: ToTransition, g: ToTransition) -> System | None:
+            candidate = invoke(f)
+            if candidate is not None:
+                return candidate
+            return invoke(g)
+
+        # Check for newer term
+        if (next_sys := invoke(UpdateTerm)) is not None:
+            return next_sys
+
+        # Dispatch by message type
         match m:
             case RequestVoteRequest():
-                return HandleRequestVoteRequest(i, j, m)
+                return invoke(HandleRequestVoteRequest)
             case RequestVoteResponse():
-                return any_of(
-                    DropStaleResponse(i, j, m),
-                    HandleRequestVoteResponse(i, j, m),
-                )
+                return invoke2(DropStaleResponse, HandleRequestVoteResponse)
             case AppendEntriesRequest():
-                return HandleAppendEntriesRequest(i, j, m)
+                return invoke(HandleAppendEntriesRequest)
             case AppendEntriesResponse():
-                return any_of(
-                    DropStaleResponse(i, j, m),
-                    HandleAppendEntriesResponse(i, j, m),
-                )
+                return invoke2(DropStaleResponse, HandleAppendEntriesResponse)
             case _:
-                raise ValueError(f"unhandled message: {m!r}")
+                raise ValueError(f"Unhandled message: {m!r}")
 
-    i: ServerId = m.mdest
-    j: ServerId = m.msource
-
-    # Any RPC with a newer term causes the recipient to advance
-    # its term first. Responses with stale terms are ignored.
-    return all_of(
-        UpdateTerm(i, j, m),
-        match_on(i, j, m),
-    )
+    return action
 
 
 # End of message handlers.
@@ -696,37 +729,90 @@ def Receive(m: Message):
 # Network state transitions
 
 
-# The network duplicates a message
-def DuplicateMessage(m: MessageEntry) -> TransitionActions:
-    def action(sys: System) -> Transitions:
-        yield sys.Send(m)
+def DuplicateMessage(m: Message) -> Transition:
+    """The network duplicates a message."""
+
+    def action(sys: System) -> System | None:
+        return replace(sys, messages=WithMessage(m, sys.messages))
 
     return action
 
 
-# The network drops a message
-def DropMessage(m: MessageEntry):
-    def action(sys: System) -> Transitions:
-        yield sys.Discard(m)
+def DropMessage(m: Message) -> Transition:
+    """The network drops a message."""
+
+    def action(sys: System) -> System | None:
+        return replace(sys, messages=WithoutMessage(m, sys.messages))
 
     return action
 
 
-def transitions(state) -> list[Callable[[System], Transitions]]:
-    def generate(state) -> Generator[Transition]:
-        for i in state.server_ids:
-            yield Restart(i)
-            yield Timeout(i)
-            yield BecomeLeader(i)
-            yield AdvanceCommitIndex(i)
-            for j in state.server_ids:
-                yield RequestVote(i, j)
-                yield AppendEntries(i, j)
-            for v in state.values:
-                yield ClientRequest(i, v)
-        for m in state.messages:
-            yield Receive(m)
-            yield DuplicateMessage(m)
-            yield DropMessage(m)
+def messageTransitions(messages: Counter[Message]) -> Generator[Transition, None, None]:
+    """Generate transitions for handling messages (receive, duplicate, drop)."""
+    for m in messages:
+        yield Receive(m)
+        yield DuplicateMessage(m)
+        yield DropMessage(m)
 
-    return list(generate(state))
+
+def serverTransitions(
+    serverIds: Sequence[ServerId],
+    logValues: Sequence[LogValue],
+) -> Generator[Transition, None, None]:
+    """Generate transitions for server actions (e.g., timeout, voting, client requests)."""
+    for i in serverIds:
+        yield Restart(i)
+        yield Timeout(i)
+        yield BecomeLeader(i)
+        yield AdvanceCommitIndex(i)
+        for j in serverIds:
+            yield RequestVote(i, j)
+            yield AppendEntries(i, j)
+        for v in logValues:
+            yield ClientRequest(i, v)
+
+
+@dataclass(frozen=True, slots=True)
+class SystemData:
+    serverIds: list[ServerId]
+    logValues: list[LogValue]
+    transitions: list[Transition]
+
+    @classmethod
+    def init(cls, serverIds: list[ServerId], logValues: list[LogValue]) -> Self:
+        """Initialize SystemData with server transitions."""
+        return cls(
+            serverIds=serverIds,
+            logValues=logValues,
+            transitions=list(
+                serverTransitions(serverIds, logValues)
+            ),  # Fixed: pass arguments
+        )
+
+    def step(self, system: System) -> System:
+        """Apply one enabled Raft transition or stutter, returning new state."""
+        # Combine static server transitions with dynamic message transitions
+        transitions = itertools.chain(
+            self.transitions,
+            messageTransitions(system.messages),
+        )
+        # Find transitions that can apply in current state
+        enabled = [t for t in transitions if t(system) is not None]
+        # Apply a random enabled transition or stutter
+        if len(enabled) == 0:
+            return system
+        system_next: System | None = random.choice(enabled)(system)
+        assert system_next is not None  # to satisfy mypy
+        return system_next
+
+    def steps(
+        self, system: System, num_steps: int, seed: int | None = None
+    ) -> list[System]:
+        """Run Raft simulation for given steps, returning state history."""
+        if seed is not None:
+            random.seed(seed)
+        systems = [system]
+        for _ in range(num_steps):
+            system = self.step(system)
+            systems.append(system)
+        return systems
