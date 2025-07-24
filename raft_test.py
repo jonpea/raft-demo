@@ -83,14 +83,28 @@ class RaftStateMachine(RuleBasedStateMachine):
     def term_counter(self):
         """Term counter."""
         for i in self.sys.serverIds:
-            assert (
-                self.sysprev.currentTerm[i] <= self.sys.currentTerm[i]
-            ), "non-decreasing"
+            assert self.sysprev.currentTerm[i] <= self.sys.currentTerm[i]
 
     @invariant()
-    def one_vote_per_server(self):
-        # counts = collections.Counter(self.sys.elections)
-        pass
+    def votes(self):
+
+        def maxcount(x: list[raft.ServerId]) -> int:
+            return max(collections.Counter(x).values(), default=0)
+
+        for i in self.sys.serverIds:
+            assert (
+                maxcount(self.sys.votesGranted[i]) <= 1
+            ), f"{i}: {self.sys.votesGranted[i]}"
+            assert (
+                maxcount(self.sys.votesResponded[i]) <= 1
+            ), f"{i}: {self.sys.votesResponded[i]}"
+
+    @invariant()
+    def quorum(self):
+        """The leader preserves it own logs."""
+        for i in self.sys.serverIds:
+            if self.sys.state[i] is raft.ServerState.LEADER:
+                assert len(self.sys.votesGranted[i]) > len(self.sys.serverIds) // 2
 
 
 # Works with pytest or unittest

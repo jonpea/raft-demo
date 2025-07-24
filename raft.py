@@ -83,7 +83,7 @@ class ElectionEntry:
     eterm: TermId
     eleader: ServerId
     elog: list[LogEntry]
-    evotes: set[ServerId]
+    evotes: list[ServerId]
     evoterLog: dict[ServerId, list[LogEntry]]
 
 
@@ -123,8 +123,8 @@ class System:
     log: dict[ServerId, list[LogEntry]]
     commitIndex: dict[ServerId, int]
     # Candidates
-    votesResponded: dict[ServerId, set[ServerId]]
-    votesGranted: dict[ServerId, set[ServerId]]
+    votesResponded: dict[ServerId, list[ServerId]]
+    votesGranted: dict[ServerId, list[ServerId]]
     voterLog: dict[ServerId, dict[ServerId, list[LogEntry]]]
     # Leader
     nextIndex: dict[ServerId, dict[ServerId, int]]
@@ -156,8 +156,8 @@ class System:
             state={i: ServerState.FOLLOWER for i in serverIds},
             votedFor={i: Nil for i in serverIds},
             # InitCandidateVars:
-            votesResponded={i: set() for i in serverIds},
-            votesGranted={i: set() for i in serverIds},
+            votesResponded={i: [] for i in serverIds},
+            votesGranted={i: [] for i in serverIds},
             # The values nextIndex[i][i] and matchIndex[i][i] are never read, since the
             # leader does not send itself messages. It's still easier to include these
             # in the functions.
@@ -259,8 +259,8 @@ def Restart(i: ServerId) -> Transition:
         return replace(
             sys,
             state=sys.state | {i: ServerState.FOLLOWER},
-            votesResponded=sys.votesResponded | {i: set()},
-            votesGranted=sys.votesGranted | {i: set()},
+            votesResponded=sys.votesResponded | {i: []},
+            votesGranted=sys.votesGranted | {i: []},
             voterLog=sys.voterLog | {i: dict()},
             # base-0 for Python
             nextIndex=sys.nextIndex | {i: {j: 1 * 0 for j in sys.serverIds}},
@@ -283,8 +283,8 @@ def Timeout(i: ServerId) -> Transition:
                 # Most implementations would probably just set the local vote
                 # atomically, but messaging localhost for it is weaker.
                 votedFor=sys.votedFor | {i: Nil},
-                votesResponded=sys.votesResponded | {i: set()},
-                votesGranted=sys.votesGranted | {i: set()},
+                votesResponded=sys.votesResponded | {i: []},
+                votesGranted=sys.votesGranted | {i: []},
                 voterLog=sys.voterLog | {i: dict()},
             )
         return None
@@ -484,9 +484,9 @@ def HandleRequestVoteResponse(
         # This tallies votes even when the current state is not Candidate, but
         # they won't be looked at, so it doesn't matter.
         if m.mterm == sys.currentTerm[i]:
-            votesResponded = sys.votesResponded | {i: sys.votesResponded[i] | {j}}
+            votesResponded = sys.votesResponded | {i: sys.votesResponded[i] + [j]}
             votesGranted = (
-                (sys.votesGranted | {i: sys.votesGranted[i] | {j}})
+                (sys.votesGranted | {i: sys.votesGranted[i] + [j]})
                 if m.mvoteGranted
                 else sys.votesGranted
             )
